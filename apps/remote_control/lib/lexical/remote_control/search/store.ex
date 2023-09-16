@@ -20,9 +20,9 @@ defmodule Lexical.RemoteControl.Search.Store do
              {:ok, new_entries} | {:error, term()})
 
   @typedoc """
-  A function that takes existing entries and refreshes them if necessary
+  A function that takes existing entries and updates them if necessary
   """
-  @type refresh_index ::
+  @type update_index ::
           (project :: Project.t(), entries :: existing_entries ->
              {:ok, new_entries, paths_to_delete} | {:error, term()})
 
@@ -40,6 +40,10 @@ defmodule Lexical.RemoteControl.Search.Store do
 
   def all do
     GenServer.call(__MODULE__, :all)
+  end
+
+  def loaded? do
+    GenServer.call(__MODULE__, :loaded?)
   end
 
   def replace(entries) do
@@ -66,34 +70,34 @@ defmodule Lexical.RemoteControl.Search.Store do
     GenServer.call(__MODULE__, {:unique_fields, fields})
   end
 
-  @spec start_link(Project.t(), create_index, refresh_index) :: GenServer.on_start()
-  def start_link(%Project{} = project, create_index, refresh_index) do
-    start_link([project, create_index, refresh_index])
+  @spec start_link(Project.t(), create_index, update_index) :: GenServer.on_start()
+  def start_link(%Project{} = project, create_index, update_index) do
+    start_link([project, create_index, update_index])
   end
 
-  def start_link([%Project{} = project, create_index, refresh_index]) do
-    GenServer.start_link(__MODULE__, [project, create_index, refresh_index], name: __MODULE__)
+  def start_link([%Project{} = project, create_index, update_index]) do
+    GenServer.start_link(__MODULE__, [project, create_index, update_index], name: __MODULE__)
   end
 
-  def start_link([create_index, refresh_index]) do
-    start_link(Lexical.RemoteControl.get_project(), create_index, refresh_index)
+  def start_link([create_index, update_index]) do
+    start_link(Lexical.RemoteControl.get_project(), create_index, update_index)
   end
 
   def init([%Project{} = project, create_index, update_index]) do
-    state = State.new(project, create_index, update_index)
+    state =
+      project
+      |> State.new(create_index, update_index)
+      |> State.async_load()
 
-    {:ok, state, {:continue, :load}}
+    {:ok, state}
   end
 
-  def handle_continue(:load, %State{} = state) do
-    case State.load(state) do
-      {:ok, state} ->
-        {:noreply, state}
+  def handle_info({ref, result}, %State{async_load_ref: ref} = state) do
+    {:noreply, State.async_load_complete(state, result)}
+  end
 
-      {:error, _} ->
-        Logger.warning("Could not load nor build search state")
-        {:noreply, state}
-    end
+  def handle_info(_, state) do
+    {:noreply, state}
   end
 
   def handle_call({:replace, entities}, _from, %State{} = state) do
@@ -163,5 +167,9 @@ defmodule Lexical.RemoteControl.Search.Store do
   def handle_call(:drop, _, %State{} = state) do
     State.drop(state)
     {:reply, :ok, state}
+  end
+
+  def handle_call(:loaded?, _, %State{loaded?: loaded?} = state) do
+    {:reply, loaded?, state}
   end
 end
